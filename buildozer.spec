@@ -5,12 +5,13 @@ package.domain = org.jarvis
 source.dir = .
 source.include_exts = py,json,png,jpg,kv
 version = 1.1.1
-requirements = python3,kivy
+requirements = python3,kivy==master
 orientation = portrait
 fullscreen = 0
 android.api = 34
 android.minapi = 24
 android.accept_sdk_license = True
+p4a.branch = develop
 
 [buildozer]
 log_level = 2
