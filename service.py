@@ -45,7 +45,7 @@ class RecognitionListener(PythonJavaClass):
     def onPartialResults(self, results):
         self.owner.on_partial(results)
 
-    @java_method("(Landroid/os/Bundle;)V")
+    @java_method("(ILandroid/os/Bundle;)V")
     def onEvent(self, eventType, params):
         pass
 
@@ -89,7 +89,8 @@ class VoiceService:
             def onInit(self, status):
                 pass
 
-        self.tts = self.TTS(self.context, TTSListener())
+        self.tts_listener = TTSListener(self)
+        self.tts = self.TTS(self.context, self.tts_listener)
 
     def speak(self, text):
         try:

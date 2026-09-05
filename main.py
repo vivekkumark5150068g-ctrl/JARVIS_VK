@@ -16,7 +16,8 @@ from jarvis_core import JarvisCore
 class JarvisApp(App):
     def build(self):
         self.title = "JARVIS V1.2"
-        self.data_file = os.path.join(self.user_data_dir, "jarvis_data.json")
+        self.app_files_dir = self.get_android_files_dir()
+        self.data_file = os.path.join(self.app_files_dir, "jarvis_data.json")
         self.core = JarvisCore(self.data_file)
 
         root = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
@@ -72,31 +73,43 @@ class JarvisApp(App):
         Clock.schedule_interval(self.update_clock, 30)
         return root
 
-    def start_voice_service(self):
-        try:
-            from android.permissions import request_permissions, Permission
-            request_permissions([
-                Permission.RECORD_AUDIO,
-                Permission.POST_NOTIFICATIONS
-            ])
-        except Exception:
-            pass
-
+    def get_android_files_dir(self):
         try:
             from jnius import autoclass
-            Service = autoclass("org.jarvis.jarvisassistant.ServiceJarvisvoice")
             activity = autoclass("org.kivy.android.PythonActivity").mActivity
-            Service.start(activity, "")
-            self.status.text = "ONLINE • JARVIS VOICE ACTIVE"
-        except Exception as e:
-            self.status.text = "ONLINE • VOICE START ERROR"
-            self.output.text = (
-                "Voice service could not start yet.\n\n"
-                "Text commands are still available.\n\n" + str(e)
+            return str(activity.getFilesDir().getAbsolutePath())
+        except Exception:
+            return self.user_data_dir
+
+    def start_voice_service(self):
+        def launch_service(*_):
+            try:
+                from jnius import autoclass
+                Service = autoclass("org.jarvis.jarvisassistant.ServiceJarvisvoice")
+                activity = autoclass("org.kivy.android.PythonActivity").mActivity
+                Service.start(activity, "")
+                self.status.text = "ONLINE • JARVIS VOICE ACTIVE"
+            except Exception as e:
+                self.status.text = "ONLINE • VOICE START ERROR"
+                self.output.text = (
+                    "Voice service could not start.\n\n"
+                    "Text commands are still available.\n\n" + str(e)
+                )
+
+        try:
+            from android.permissions import request_permissions
+            request_permissions(
+                [
+                    "android.permission.RECORD_AUDIO",
+                    "android.permission.POST_NOTIFICATIONS"
+                ],
+                launch_service
             )
+        except Exception:
+            launch_service()
 
     def poll_voice_events(self, *_):
-        path = os.path.join(self.user_data_dir, "jarvis_voice_event.txt")
+        path = os.path.join(self.app_files_dir, "jarvis_voice_event.txt")
         try:
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
