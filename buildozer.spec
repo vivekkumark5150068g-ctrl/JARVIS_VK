@@ -1,15 +1,15 @@
 [app]
 
-title = JARVIS V1.1.1
+title = JARVIS V1.2
 package.name = jarvisassistant
 package.domain = org.jarvis
 
 source.dir = .
 source.include_exts = py,json,png,jpg,kv
 
-version = 1.1.1
+version = 1.2.0
 
-requirements = python3,kivy
+requirements = python3,kivy,pyjnius
 
 orientation = portrait
 fullscreen = 0
@@ -17,12 +17,13 @@ fullscreen = 0
 android.api = 36
 android.minapi = 24
 android.ndk = 29
-
 android.archs = arm64-v8a,armeabi-v7a
 
 android.accept_sdk_license = True
 
-android.permissions = INTERNET
+android.permissions = INTERNET,RECORD_AUDIO,FOREGROUND_SERVICE,FOREGROUND_SERVICE_MICROPHONE,POST_NOTIFICATIONS
+
+services = jarvisvoice:service.py:foreground:sticky:foregroundServiceType=microphone
 
 p4a.fork = kivy
 p4a.branch = develop
