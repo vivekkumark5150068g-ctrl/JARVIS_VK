@@ -15,34 +15,33 @@ from jarvis_core import JarvisCore
 
 class JarvisApp(App):
     def build(self):
-        self.title = "JARVIS V1.2"
+        self.title = "JARVIS V1.3"
         self.app_files_dir = self.get_android_files_dir()
         self.data_file = os.path.join(self.app_files_dir, "jarvis_data.json")
+        self.event_file = os.path.join(self.app_files_dir, "jarvis_voice_event.txt")
         self.core = JarvisCore(self.data_file)
 
         root = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
 
         self.header = Label(
-            text="JARVIS V1.2\nYour Personal Assistant",
+            text="JARVIS V1.3\nYour Personal Assistant",
             font_size=dp(24), size_hint_y=None, height=dp(90)
         )
         root.add_widget(self.header)
 
         self.status = Label(
-            text="ONLINE • VOICE STANDBY • " +
-                 datetime.now().strftime("%d-%m-%Y  %I:%M %p"),
+            text="STARTING VOICE...",
             size_hint_y=None, height=dp(35)
         )
         root.add_widget(self.status)
 
         self.output = Label(
-            text="Welcome Boss.\n\nSay \"JARVIS\" to wake the voice assistant.",
+            text='Welcome Boss.\n\nStarting microphone listener...',
             halign="left", valign="top", size_hint_y=None
         )
         self.output.bind(texture_size=lambda *_: setattr(
             self.output, "height", self.output.texture_size[1] + dp(20)
         ))
-
         scroll = ScrollView()
         scroll.add_widget(self.output)
         root.add_widget(scroll)
@@ -69,7 +68,7 @@ class JarvisApp(App):
         root.add_widget(send)
 
         self.start_voice_service()
-        Clock.schedule_interval(self.poll_voice_events, 0.4)
+        Clock.schedule_interval(self.poll_voice_events, 0.25)
         Clock.schedule_interval(self.update_clock, 30)
         return root
 
@@ -88,13 +87,10 @@ class JarvisApp(App):
                 Service = autoclass("org.jarvis.jarvisassistant.ServiceJarvisvoice")
                 activity = autoclass("org.kivy.android.PythonActivity").mActivity
                 Service.start(activity, "")
-                self.status.text = "ONLINE • JARVIS VOICE ACTIVE"
+                self.status.text = "ONLINE • VOICE SERVICE STARTED"
             except Exception as e:
-                self.status.text = "ONLINE • VOICE START ERROR"
-                self.output.text = (
-                    "Voice service could not start.\n\n"
-                    "Text commands are still available.\n\n" + str(e)
-                )
+                self.status.text = "VOICE SERVICE ERROR"
+                self.output.text = "Could not start voice service.\n\n" + str(e)
 
         try:
             from android.permissions import request_permissions
@@ -109,28 +105,46 @@ class JarvisApp(App):
             launch_service()
 
     def poll_voice_events(self, *_):
-        path = os.path.join(self.app_files_dir, "jarvis_voice_event.txt")
         try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    text = f.read().strip()
-                os.remove(path)
+            if not os.path.exists(self.event_file):
+                return
+            with open(self.event_file, "r", encoding="utf-8") as f:
+                event = f.read().strip()
+            os.remove(self.event_file)
+            if not event:
+                return
 
-                if text:
-                    if text.startswith("WAKE|"):
-                        self.output.text = (
-                            "JARVIS AWAKE\n\n"
-                            "Yes Boss. How can I help you?"
-                        )
-                    elif text.startswith("COMMAND|"):
-                        command = text[8:].strip()
-                        self.handle(command)
+            if event.startswith("STATUS|"):
+                msg = event[7:]
+                self.status.text = "ONLINE • " + msg
+                return
+
+            if event.startswith("ERROR|"):
+                msg = event[6:]
+                self.status.text = "VOICE ERROR"
+                self.output.text = "Voice error:\n\n" + msg
+                return
+
+            if event.startswith("HEARD|"):
+                self.output.text = "I heard:\n\n" + event[6:]
+                return
+
+            if event.startswith("WAKE|"):
+                self.output.text = (
+                    "JARVIS AWAKE\n\n"
+                    "Yes Boss. How can I help you?"
+                )
+                return
+
+            if event.startswith("COMMAND|"):
+                command = event[8:].strip()
+                self.handle(command)
         except Exception:
             pass
 
     def update_clock(self, *_):
         self.status.text = (
-            "ONLINE • JARVIS VOICE ACTIVE • " +
+            "ONLINE • VOICE ACTIVE • " +
             datetime.now().strftime("%d-%m-%Y  %I:%M %p")
         )
 
@@ -141,11 +155,9 @@ class JarvisApp(App):
             self.handle(text)
 
     def handle(self, command):
-        result = self.core.handle(command)
-        self.output.text = result
+        self.output.text = self.core.handle(command)
 
     def on_stop(self):
-        # The service is intentionally sticky; it may continue after the UI closes.
         return super().on_stop()
 
 

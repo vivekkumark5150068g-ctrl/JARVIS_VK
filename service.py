@@ -1,9 +1,20 @@
 import os
 import re
-import threading
 import time
 
 from jnius import autoclass, PythonJavaClass, java_method
+
+
+class CallbackRunnable(PythonJavaClass):
+    __javainterfaces__ = ["java/lang/Runnable"]
+
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    @java_method("()V")
+    def run(self):
+        self.callback()
 
 
 class RecognitionListener(PythonJavaClass):
@@ -15,11 +26,11 @@ class RecognitionListener(PythonJavaClass):
 
     @java_method("(Landroid/os/Bundle;)V")
     def onReadyForSpeech(self, params):
-        pass
+        self.owner.notify_app("STATUS|LISTENING — say JARVIS")
 
     @java_method("()V")
     def onBeginningOfSpeech(self):
-        pass
+        self.owner.notify_app("STATUS|HEARING YOU...")
 
     @java_method("([F)V")
     def onRmsChanged(self, rmsdB):
@@ -49,59 +60,76 @@ class RecognitionListener(PythonJavaClass):
     def onEvent(self, eventType, params):
         pass
 
-    # Android 14 language detection callback.
     @java_method("(Landroid/os/Bundle;)V")
     def onLanguageDetection(self, results):
         pass
 
 
+class TTSListener(PythonJavaClass):
+    __javainterfaces__ = ["android/speech/tts/TextToSpeech$OnInitListener"]
+
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+
+    @java_method("(I)V")
+    def onInit(self, status):
+        self.owner.tts_ready = (status == 0)
+        if self.owner.tts_ready:
+            self.owner.speak("JARVIS voice system online.")
+
+
 class VoiceService:
     def __init__(self):
-        self.Context = autoclass("android.content.Context")
         self.Intent = autoclass("android.content.Intent")
         self.RecognizerIntent = autoclass("android.speech.RecognizerIntent")
         self.SpeechRecognizer = autoclass("android.speech.SpeechRecognizer")
         self.PythonService = autoclass("org.kivy.android.PythonService")
         self.TTS = autoclass("android.speech.tts.TextToSpeech")
-        self.Locale = autoclass("java.util.Locale")
+        self.Handler = autoclass("android.os.Handler")
+        self.Looper = autoclass("android.os.Looper")
+        self.ArrayList = autoclass("java.util.ArrayList")
 
         self.context = self.PythonService.mService
+        self.handler = self.Handler(self.Looper.getMainLooper())
         self.listener = RecognitionListener(self)
+        self.tts_listener = TTSListener(self)
+
         self.recognizer = None
         self.tts = None
+        self.tts_ready = False
         self.active = True
         self.awake = False
-        self.starting = False
+        self.restart_pending = False
         self.last_text = ""
-        self.last_start = 0
 
-        files = self.context.getFilesDir().getAbsolutePath()
-        self.event_file = os.path.join(str(files), "jarvis_voice_event.txt")
+        self.files_dir = str(self.context.getFilesDir().getAbsolutePath())
+        self.event_file = os.path.join(self.files_dir, "jarvis_voice_event.txt")
 
-        self.init_tts()
-        self.restart_listener(0.8)
-
-    def init_tts(self):
-        class TTSListener(PythonJavaClass):
-            __javainterfaces__ = ["android/speech/tts/TextToSpeech$OnInitListener"]
-
-            @java_method("(I)V")
-            def onInit(self, status):
-                pass
-
-        self.tts_listener = TTSListener(self)
+        self.notify_app("STATUS|SERVICE STARTING")
         self.tts = self.TTS(self.context, self.tts_listener)
+        self.post(self.start_listening, 800)
 
-    def speak(self, text):
-        try:
-            self.tts.speak(
-                text,
-                self.TTS.QUEUE_FLUSH,
-                None,
-                "jarvis_" + str(int(time.time() * 1000))
-            )
-        except Exception:
-            pass
+    def post(self, callback, delay_ms=0):
+        runnable = CallbackRunnable(callback)
+        if not hasattr(self, "_runnables"):
+            self._runnables = []
+        self._runnables.append(runnable)
+
+        def wrapped():
+            try:
+                callback()
+            finally:
+                try:
+                    self._runnables.remove(runnable)
+                except Exception:
+                    pass
+
+        runnable.callback = wrapped
+        if delay_ms:
+            self.handler.postDelayed(runnable, delay_ms)
+        else:
+            self.handler.post(runnable)
 
     def notify_app(self, event):
         try:
@@ -110,17 +138,33 @@ class VoiceService:
         except Exception:
             pass
 
+    def speak(self, text):
+        try:
+            if self.tts is not None and self.tts_ready:
+                self.tts.speak(
+                    text, self.TTS.QUEUE_FLUSH, None,
+                    "jarvis_" + str(int(time.time() * 1000))
+                )
+        except Exception as e:
+            self.notify_app("ERROR|TTS: " + str(e))
+
     def make_intent(self):
         intent = self.Intent(self.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
         intent.putExtra(
             self.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
             self.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
         )
-        intent.putExtra(self.RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         intent.putExtra(self.RecognizerIntent.EXTRA_PARTIAL_RESULTS, True)
+        intent.putExtra(self.RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        # Start with the broadly supported Indian English locale.
+        # Android's recognizer can still return Hindi on devices/services
+        # configured for Hindi; language switching is added when supported.
+        intent.putExtra(self.RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
 
-        # Android 14+ can detect/switch between Hindi and English.
         try:
+            allowed = self.ArrayList()
+            allowed.add("en-IN")
+            allowed.add("hi-IN")
             intent.putExtra(
                 self.RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, True
             )
@@ -130,52 +174,53 @@ class VoiceService:
             )
             intent.putExtra(
                 self.RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES,
-                ["en-IN", "hi-IN"]
+                allowed
             )
             intent.putExtra(
                 self.RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
-                ["en-IN", "hi-IN"]
+                allowed
             )
         except Exception:
-            intent.putExtra(self.RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-
+            pass
         return intent
 
     def start_listening(self):
-        if not self.active or self.starting:
+        if not self.active:
             return
+        self.restart_pending = False
 
-        self.starting = True
         try:
+            if not self.SpeechRecognizer.isRecognitionAvailable(self.context):
+                self.notify_app(
+                    "ERROR|Speech recognition service is not available on this phone."
+                )
+                self.schedule_restart(5000)
+                return
+
             if self.recognizer is not None:
                 try:
+                    self.recognizer.cancel()
                     self.recognizer.destroy()
                 except Exception:
                     pass
+                self.recognizer = None
 
-            self.recognizer = self.SpeechRecognizer.createSpeechRecognizer(self.context)
+            self.recognizer = self.SpeechRecognizer.createSpeechRecognizer(
+                self.context
+            )
             self.recognizer.setRecognitionListener(self.listener)
-            self.last_start = time.time()
             self.recognizer.startListening(self.make_intent())
-        except Exception:
-            self.schedule_restart(1.5)
-        finally:
-            self.starting = False
+            self.notify_app("STATUS|LISTENING — say JARVIS")
+        except Exception as e:
+            self.recognizer = None
+            self.notify_app("ERROR|Recognizer start: " + str(e))
+            self.schedule_restart(2500)
 
-    def stop_listening(self):
-        try:
-            if self.recognizer is not None:
-                self.recognizer.stopListening()
-        except Exception:
-            pass
-
-    def schedule_restart(self, delay=1.0):
-        if not self.active:
+    def schedule_restart(self, delay_ms=1000):
+        if not self.active or self.restart_pending:
             return
-        threading.Timer(delay, self.start_listening).start()
-
-    def restart_listener(self, delay=0.8):
-        self.schedule_restart(delay)
+        self.restart_pending = True
+        self.post(self.start_listening, delay_ms)
 
     def on_partial(self, results):
         try:
@@ -183,7 +228,8 @@ class VoiceService:
                 self.SpeechRecognizer.RESULTS_RECOGNITION
             )
             if arr and arr.size() > 0:
-                self.process_text(str(arr.get(0)), partial=True)
+                text = str(arr.get(0))
+                self.process_text(text, True)
         except Exception:
             pass
 
@@ -193,35 +239,49 @@ class VoiceService:
                 self.SpeechRecognizer.RESULTS_RECOGNITION
             )
             if arr and arr.size() > 0:
-                self.process_text(str(arr.get(0)), partial=False)
+                self.process_text(str(arr.get(0)), False)
+            else:
+                self.schedule_restart(700)
         except Exception:
-            self.schedule_restart(0.8)
+            self.schedule_restart(1000)
 
     def on_error(self, error):
-        # SpeechRecognizer reports many normal transient errors such as
-        # NO_MATCH, TIMEOUT and BUSY. Recreate the recognizer instead of
-        # leaving the assistant silent.
-        self.schedule_restart(1.0)
+        names = {
+            1: "network error",
+            2: "network timeout",
+            3: "audio error",
+            4: "server error",
+            5: "client error",
+            6: "speech timeout",
+            7: "no match",
+            8: "recognizer busy",
+            9: "insufficient permissions",
+            10: "language unavailable",
+            11: "language not supported",
+            12: "server disconnected",
+            13: "cannot listen while in call"
+        }
+        self.notify_app("ERROR|SpeechRecognizer " + str(error) + ": " +
+                        names.get(error, "unknown error"))
+        self.schedule_restart(1200)
 
     def process_text(self, text, partial=False):
-        text = re.sub(r"\s+", " ", text.strip())
-        if not text or text == self.last_text and partial:
+        text = re.sub(r"\\s+", " ", text.strip())
+        if not text:
             return
 
         if partial:
-            low = text.lower()
-            if not self.awake and self.contains_wake(low):
+            if not self.awake and self.contains_wake(text.lower()):
                 self.activate_wake(text)
             return
 
-        self.last_text = text
+        self.notify_app("HEARD|" + text)
         low = text.lower()
 
         if not self.awake:
             if self.contains_wake(low):
                 remainder = self.remove_wake(text)
                 self.activate_wake(text)
-
                 if remainder.strip():
                     self.execute_command(remainder.strip())
             return
@@ -230,60 +290,47 @@ class VoiceService:
         if low in {"cancel", "stop", "never mind", "नहीं", "रहने दो"}:
             self.speak("Okay Boss.")
             self.notify_app("COMMAND|" + low)
-            self.schedule_restart(1.0)
+            self.schedule_restart(800)
             return
 
         self.execute_command(text)
 
     @staticmethod
     def contains_wake(text):
-        normalized = re.sub(r"[^a-z0-9\u0900-\u097f]+", " ", text.lower())
-        return bool(re.search(r"\bjarvis\b", normalized)) or "जार्विस" in normalized
+        normalized = re.sub(r"[^a-z0-9\\u0900-\\u097f]+", " ", text.lower())
+        return bool(re.search(r"\\bjarvis\\b", normalized)) or "जार्विस" in normalized
 
     @staticmethod
     def remove_wake(text):
-        return re.sub(r"(?i)\bjarvis\b", "", text).replace("जार्विस", "").strip()
+        return re.sub(r"(?i)\\bjarvis\\b", "", text).replace("जार्विस", "").strip()
 
     def activate_wake(self, original):
         if self.awake:
             return
-
         self.awake = True
-        self.stop_listening()
         self.notify_app("WAKE|" + original)
-
-        # Required wake response.
         self.speak("Yes Boss. How can I help you?")
-
-        # Give TTS a moment to finish before opening the microphone again.
-        self.schedule_restart(2.2)
+        self.post(self.start_listening, 1800)
 
     def execute_command(self, command):
         try:
-            # Import here so service startup stays light.
             from jarvis_core import JarvisCore
-
-            files = self.context.getFilesDir().getAbsolutePath()
-            data_file = os.path.join(str(files), "jarvis_data.json")
-            core = JarvisCore(data_file)
-            response = core.handle(command)
-
+            data_file = os.path.join(self.files_dir, "jarvis_data.json")
+            response = JarvisCore(data_file).handle(command)
             self.notify_app("COMMAND|" + command)
             self.speak(self.clean_for_speech(response))
-        except Exception:
+        except Exception as e:
+            self.notify_app("ERROR|Command: " + str(e))
             self.speak("Sorry Boss, I could not process that command.")
         finally:
             self.awake = False
-            self.schedule_restart(1.0)
+            self.schedule_restart(1000)
 
     @staticmethod
     def clean_for_speech(text):
-        # Keep spoken responses concise; the GUI still shows the full content.
         text = text.replace("[DONE]", "done").replace("[ ]", "")
-        text = re.sub(r"\s+", " ", text)
-        if len(text) > 500:
-            text = text[:500] + "."
-        return text
+        text = re.sub(r"\\s+", " ", text)
+        return text[:500] + ("." if len(text) > 500 else "")
 
 
 def main():

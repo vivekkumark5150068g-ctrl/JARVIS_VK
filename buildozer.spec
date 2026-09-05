@@ -7,7 +7,7 @@ package.domain = org.jarvis
 source.dir = .
 source.include_exts = py,json,png,jpg,kv
 
-version = 1.2.1
+version = 1.3.0
 
 requirements = python3,kivy,pyjnius
 
