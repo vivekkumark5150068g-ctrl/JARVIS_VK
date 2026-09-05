@@ -266,7 +266,7 @@ class VoiceService:
         self.schedule_restart(1200)
 
     def process_text(self, text, partial=False):
-        text = re.sub(r"\\s+", " ", text.strip())
+        text = re.sub(r"\s+", " ", text.strip())
         if not text:
             return
 
@@ -297,17 +297,24 @@ class VoiceService:
 
     @staticmethod
     def contains_wake(text):
-        normalized = re.sub(r"[^a-z0-9\\u0900-\\u097f]+", " ", text.lower())
-        return bool(re.search(r"\\bjarvis\\b", normalized)) or "जार्विस" in normalized
+        normalized = re.sub(r"[^a-z0-9\u0900-\u097f]+", " ", text.lower())
+        return bool(re.search(r"\bjarvis\b", normalized)) or "जार्विस" in normalized
 
     @staticmethod
     def remove_wake(text):
-        return re.sub(r"(?i)\\bjarvis\\b", "", text).replace("जार्विस", "").strip()
+        return re.sub(r"(?i)\bjarvis\b", "", text).replace("जार्विस", "").strip()
 
     def activate_wake(self, original):
         if self.awake:
             return
         self.awake = True
+        try:
+            if self.recognizer is not None:
+                self.recognizer.cancel()
+                self.recognizer.destroy()
+        except Exception:
+            pass
+        self.recognizer = None
         self.notify_app("WAKE|" + original)
         self.speak("Yes Boss. How can I help you?")
         self.post(self.start_listening, 1800)
@@ -329,7 +336,7 @@ class VoiceService:
     @staticmethod
     def clean_for_speech(text):
         text = text.replace("[DONE]", "done").replace("[ ]", "")
-        text = re.sub(r"\\s+", " ", text)
+        text = re.sub(r"\s+", " ", text)
         return text[:500] + ("." if len(text) > 500 else "")
 
 
